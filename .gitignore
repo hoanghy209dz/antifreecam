@@ -1,0 +1,4 @@
+# Bỏ qua các file và thư mục của Maven
+target/
+*.jar
+*.class
