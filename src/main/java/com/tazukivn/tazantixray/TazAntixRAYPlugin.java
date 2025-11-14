@@ -370,68 +370,51 @@ public class TazAntixRAYPlugin extends JavaPlugin implements Listener, CommandEx
             World world = player.getWorld();
             int newChunkX = player.getLocation().getChunk().getX();
             int newChunkZ = player.getLocation().getChunk().getZ();
-
-            // Không di chuyển sang chunk khác thì khỏi làm gì
             if (oldChunkX == newChunkX && oldChunkZ == newChunkZ) return;
 
             int radius = getLimitedAreaChunkRadius();
 
-            // Tập chunk quanh vị trí cũ
-            Set<Long> oldArea = new HashSet<>();
+            // Tập chunk cũ / mới (dùng chunk key long)
+            Set<Long> oldChunks = new HashSet<>();
+            Set<Long> newChunks = new HashSet<>();
+            List<Chunk> chunksToRefresh = new ArrayList<>();
+
+            // Vùng cũ quanh (oldChunkX, oldChunkZ)
             for (int x = oldChunkX - radius; x <= oldChunkX + radius; x++) {
                 for (int z = oldChunkZ - radius; z <= oldChunkZ + radius; z++) {
-                    oldArea.add(Chunk.getChunkKey(x, z));
+                    oldChunks.add(Chunk.getChunkKey(x, z));
                 }
             }
 
-            // Tập chunk quanh vị trí mới
-            Set<Long> newArea = new HashSet<>();
+            // Vùng mới quanh (newChunkX, newChunkZ) + các chunk "mới bước vào"
             for (int x = newChunkX - radius; x <= newChunkX + radius; x++) {
                 for (int z = newChunkZ - radius; z <= newChunkZ + radius; z++) {
-                    newArea.add(Chunk.getChunkKey(x, z));
-                }
-            }
-
-            // Những chunk MỚI vào radius
-            List<Chunk> entering = new ArrayList<>();
-            for (long key : newArea) {
-                if (!oldArea.contains(key)) {
-                    int x = Chunk.getX(key);
-                    int z = Chunk.getZ(key);
-                    if (world.isChunkLoaded(x, z)) {
-                        entering.add(world.getChunkAt(x, z));
+                    long key = Chunk.getChunkKey(x, z);
+                    newChunks.add(key);
+                    // Chunk nằm trong vùng mới nhưng KHÔNG có trong vùng cũ → mới bước vào
+                    if (!oldChunks.contains(key) && world.isChunkLoaded(x, z)) {
+                        chunksToRefresh.add(world.getChunkAt(x, z));
                     }
                 }
             }
 
-            // Những chunk RỜI khỏi radius (phía sau lưng bạn)
-            List<Chunk> leaving = new ArrayList<>();
-            for (long key : oldArea) {
-                if (!newArea.contains(key)) {
-                    int x = Chunk.getX(key);
-                    int z = Chunk.getZ(key);
-                    if (world.isChunkLoaded(x, z)) {
-                        leaving.add(world.getChunkAt(x, z));
+            // Các chunk "ra khỏi" vùng nhìn thấy → refresh lại để bị ẩn lại
+            for (int x = oldChunkX - radius; x <= oldChunkX + radius; x++) {
+                for (int z = oldChunkZ - radius; z <= oldChunkZ + radius; z++) {
+                    long key = Chunk.getChunkKey(x, z);
+                    if (!newChunks.contains(key) && world.isChunkLoaded(x, z)) {
+                        chunksToRefresh.add(world.getChunkAt(x, z));
                     }
                 }
             }
 
-            if (entering.isEmpty() && leaving.isEmpty()) {
-                return;
-            }
-
-            debugLog("Limited-area update for " + player.getName()
-                    + ": entering=" + entering.size()
-                    + ", leaving=" + leaving.size());
-
-            // Các chunk mới vào vùng gần người chơi → gửi lại bản KHÔNG obfuscate
-            for (Chunk chunk : entering) {
-                world.refreshChunk(chunk.getX(), chunk.getZ());
-            }
-
-            // Các chunk đã rời khỏi vùng gần → gửi lại bản ĐÃ obfuscate (vì giờ nằm ngoài limited-area)
-            for (Chunk chunk : leaving) {
-                world.refreshChunk(chunk.getX(), chunk.getZ());
+            if (!chunksToRefresh.isEmpty()) {
+                debugLog("Limited-area fast refresh for " + player.getName()
+                        + ", refreshing " + chunksToRefresh.size() + " chunks (entering + leaving).");
+                for (Chunk chunk : chunksToRefresh) {
+                    // Ở đây dùng getX() / getZ() KHÔNG có tham số → đúng API Bukkit
+                    world.refreshChunk(chunk.getX(), chunk.getZ());
+                }
             }
         }, delay);
     }
