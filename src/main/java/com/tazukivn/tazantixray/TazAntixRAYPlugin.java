@@ -370,35 +370,72 @@ public class TazAntixRAYPlugin extends JavaPlugin implements Listener, CommandEx
             World world = player.getWorld();
             int newChunkX = player.getLocation().getChunk().getX();
             int newChunkZ = player.getLocation().getChunk().getZ();
+
+            // Không di chuyển sang chunk khác thì khỏi làm gì
             if (oldChunkX == newChunkX && oldChunkZ == newChunkZ) return;
 
             int radius = getLimitedAreaChunkRadius();
-            Set<Long> oldChunks = new HashSet<>();
-            List<Chunk> newChunksToRefresh = new ArrayList<>();
 
+            // Tập chunk quanh vị trí cũ
+            Set<Long> oldArea = new HashSet<>();
             for (int x = oldChunkX - radius; x <= oldChunkX + radius; x++) {
                 for (int z = oldChunkZ - radius; z <= oldChunkZ + radius; z++) {
-                    oldChunks.add(Chunk.getChunkKey(x, z));
+                    oldArea.add(Chunk.getChunkKey(x, z));
                 }
             }
+
+            // Tập chunk quanh vị trí mới
+            Set<Long> newArea = new HashSet<>();
             for (int x = newChunkX - radius; x <= newChunkX + radius; x++) {
                 for (int z = newChunkZ - radius; z <= newChunkZ + radius; z++) {
-                    if (!oldChunks.contains(Chunk.getChunkKey(x, z))) {
-                        if (world.isChunkLoaded(x, z)) {
-                            newChunksToRefresh.add(world.getChunkAt(x, z));
-                        }
+                    newArea.add(Chunk.getChunkKey(x, z));
+                }
+            }
+
+            // Những chunk MỚI vào radius
+            List<Chunk> entering = new ArrayList<>();
+            for (long key : newArea) {
+                if (!oldArea.contains(key)) {
+                    int x = Chunk.getX(key);
+                    int z = Chunk.getZ(key);
+                    if (world.isChunkLoaded(x, z)) {
+                        entering.add(world.getChunkAt(x, z));
                     }
                 }
             }
 
-            if (!newChunksToRefresh.isEmpty()) {
-                debugLog("Limited-area fast refresh for " + player.getName() + ", refreshing " + newChunksToRefresh.size() + " new chunks.");
-                for(Chunk chunk : newChunksToRefresh) {
-                    world.refreshChunk(chunk.getX(), chunk.getZ());
+            // Những chunk RỜI khỏi radius (phía sau lưng bạn)
+            List<Chunk> leaving = new ArrayList<>();
+            for (long key : oldArea) {
+                if (!newArea.contains(key)) {
+                    int x = Chunk.getX(key);
+                    int z = Chunk.getZ(key);
+                    if (world.isChunkLoaded(x, z)) {
+                        leaving.add(world.getChunkAt(x, z));
+                    }
                 }
+            }
+
+            if (entering.isEmpty() && leaving.isEmpty()) {
+                return;
+            }
+
+            debugLog("Limited-area update for " + player.getName()
+                    + ": entering=" + entering.size()
+                    + ", leaving=" + leaving.size());
+
+            // Các chunk mới vào vùng gần người chơi → gửi lại bản KHÔNG obfuscate
+            for (Chunk chunk : entering) {
+                world.refreshChunk(chunk.getX(), chunk.getZ());
+            }
+
+            // Các chunk đã rời khỏi vùng gần → gửi lại bản ĐÃ obfuscate (vì giờ nằm ngoài limited-area)
+            for (Chunk chunk : leaving) {
+                world.refreshChunk(chunk.getX(), chunk.getZ());
             }
         }, delay);
     }
+
 
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     public void onPlayerMove(PlayerMoveEvent event) {

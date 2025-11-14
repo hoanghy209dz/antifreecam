@@ -99,7 +99,6 @@ public class ChunkPacketListenerPE implements PacketListener {
 
             NBTCompound heightmapsNbt = null;
             if (hasHeightmaps) {
-                // Tự xử lý convert sang dạng legacy nếu đang ở 1.21.5+
                 heightmapsNbt = original.getHeightMaps();
             }
 
