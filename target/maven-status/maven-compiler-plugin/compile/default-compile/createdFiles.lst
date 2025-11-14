@@ -1,0 +1,10 @@
+com\tazukivn\tazantixray\PlatformCompatibility$FoliaTaskWrapper.class
+com\tazukivn\tazantixray\PaperOptimizer.class
+com\tazukivn\tazantixray\FoliaOptimizer.class
+com\tazukivn\tazantixray\MessageFormatter.class
+com\tazukivn\tazantixray\GeyserFloodgateSupport.class
+com\tazukivn\tazantixray\AntiXrayUtils.class
+com\tazukivn\tazantixray\PlatformCompatibility.class
+com\tazukivn\tazantixray\TazAntixRAYPlugin.class
+com\tazukivn\tazantixray\ChunkPacketListenerPE.class
+com\tazukivn\tazantixray\EntityPacketListener.class

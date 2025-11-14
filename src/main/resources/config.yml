@@ -1,0 +1,119 @@
+# ========================================
+# TazAntixRAY Configuration
+# ========================================
+# Advanced Anti-XRay plugin for Folia
+# Developed by Edenplaysmc & HoangHy
+# Version: 1.2.3 (MODIFIED)
+# ========================================
+
+# ========================================
+# GENERAL SETTINGS
+# ========================================
+settings:
+  language: "en"
+  debug-mode: false
+  # Cooldown (giây) giữa các lần làm mới khi người chơi đi qua ranh giới Y (ví dụ: từ trên cao xuống lòng đất).
+  # Giảm xuống để phản ứng nhanh hơn.
+  refresh-cooldown-seconds: 2
+
+# ========================================
+# WORLD CONFIGURATION
+# ========================================
+worlds:
+  # Liệt kê các thế giới mà bạn muốn plugin hoạt động.
+  whitelist:
+    - "world"
+    - "mining_world"
+
+# ========================================
+# ANTI-XRAY SETTINGS
+# ========================================
+antixray:
+  # Plugin sẽ kích hoạt chế độ che giấu khi người chơi ở trên hoặc bằng độ cao Y này.
+  protection-y-level: 31.0
+  # Khi được kích hoạt, tất cả các block ở dưới hoặc bằng độ cao Y này sẽ bị che giấu.
+  hide-below-y: 16
+  transition:
+    smooth-transition: true
+    transition-zone-size: 5
+
+# ========================================
+# PERFORMANCE SETTINGS
+# ========================================
+performance:
+  # === Cài đặt Scheduling để tối ưu hiệu năng ===
+  scheduling:
+    # Độ trễ (tính bằng tick) trước khi bắt đầu làm mới chunk từ từ (khi bay từ trên cao xuống).
+    gradual-refresh-delay-ticks: 5
+
+    # Số lượng chunk tối đa được làm mới mỗi tick. Tăng lên để làm mới view nhanh hơn.
+    chunks-per-tick: 25
+
+    # Độ trễ (tính bằng tick) khi cập nhật "bong bóng" limited-area.
+    # Giá trị thấp sẽ giúp load chunk gần như tức thì khi di chuyển nhanh, tránh lỗi "thủng" chunk.
+    # Đã được tối ưu, không nên thay đổi trừ khi bạn biết mình đang làm gì.
+    limited-area-update-delay-ticks: 2
+
+  # [THÊM MỚI] Cài đặt làm mới chunk từ từ khi người chơi tham gia (để sửa lỗi 0-tick)
+  join-pacing:
+    enabled: true
+    # Độ trễ ban đầu (ticks) trước khi bắt đầu làm mới. Phải >= 1.
+    initial-delay-ticks: 40
+    # Số lượng chunk làm mới mỗi đợt. Phải >= 1.
+    chunks-per-interval: 2
+    # Khoảng thời gian (ticks) giữa mỗi đợt làm mới. Phải >= 1.
+    interval-ticks: 4
+
+  # Làm mới tức thì một khu vực lớn khi người chơi tiếp cận lòng đất.
+  instant-protection:
+    enabled: true
+    instant-load-radius: 15
+    pre-load-distance: 10
+    force-immediate-refresh: true
+
+  # Chế độ "bong bóng", chỉ hiện các chunk trong bán kính nhất định quanh người chơi khi họ ở dưới lòng đất.
+  limited-area:
+    enabled: true
+    chunk-radius: 3
+    apply-only-near-player: true
+
+  # Cài đặt thay thế block.
+  replacement:
+    # DECEPTIVE: Che giấu tất cả mọi thứ không phải là không khí. Khuyến nghị dùng chế độ này.
+    # BLOCK: Chỉ che giấu các block quặng (chế độ cũ, không hiệu quả bằng).
+    mode: "DECEPTIVE"
+    # Block dùng để thay thế. Các tùy chọn: "stone", "deepslate", "air".
+    block-type: "deepslate"
+
+  # Cài đặt ẩn thực thể.
+  entities:
+    hide-entities: true
+    # Tần suất (tính bằng tick) để quét và ẩn/hiện các thực thể xung quanh người chơi.
+    # 20 ticks = 1 giây. Giá trị thấp hơn sẽ phản ứng nhanh hơn nhưng có thể tốn tài nguyên hơn một chút.
+    check-interval-ticks: 10
+
+  # Bật/tắt toàn bộ cơ chế bảo vệ khi người chơi ở trên cao nhìn xuống lòng đất.
+  underground-protection:
+    enabled: true
+
+# ========================================
+# ADVANCED & COMPATIBILITY
+# ========================================
+advanced:
+  packet-processing:
+    modify-chunk-data: true
+    modify-block-changes: true
+    modify-multi-block-changes: true
+  teleport-handling:
+    delay-ticks: 1
+    manage-teleport-states: true
+
+compatibility:
+  other-antixray-plugins: false
+  world-management-plugins: true
+  permission-plugins: true
+
+# ========================================
+# DO NOT MODIFY BELOW THIS LINE
+# ========================================
+config-version: 3
