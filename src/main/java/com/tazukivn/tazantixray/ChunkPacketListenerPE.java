@@ -6,21 +6,48 @@ import com.github.retrooper.packetevents.event.PacketSendEvent;
 import com.github.retrooper.packetevents.protocol.packettype.PacketType;
 import com.github.retrooper.packetevents.protocol.nbt.NBTCompound;
 import com.github.retrooper.packetevents.protocol.player.User;
-import com.github.retrooper.packetevents.protocol.world.BlockPosition;
 import com.github.retrooper.packetevents.protocol.world.chunk.Column;
 import com.github.retrooper.packetevents.protocol.world.chunk.TileEntity;
 import com.github.retrooper.packetevents.protocol.world.states.WrappedBlockState;
 import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerBlockChange;
 import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerChunkData;
 import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerMultiBlockChange;
-import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerSectionBlocksUpdate;
-import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerMultiBlockChange.BlockChangeRecord;
-import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerSectionBlocksUpdate.SectionBlockChangeEntry;
 import org.bukkit.Bukkit;
 import org.bukkit.entity.Player;
 
+import java.lang.reflect.Array;
+import java.lang.reflect.Constructor;
+import java.lang.reflect.InvocationTargetException;
+import java.lang.reflect.Method;
+
 public class ChunkPacketListenerPE implements PacketListener {
     private final TazAntixRAYPlugin plugin;
+
+    private static final Constructor<?> SECTION_BLOCKS_UPDATE_CONSTRUCTOR;
+    private static final Method SECTION_BLOCKS_UPDATE_GET_CHANGES_METHOD;
+    private static final Method SECTION_BLOCKS_UPDATE_SET_CHANGES_METHOD;
+
+    static {
+        Constructor<?> constructor = null;
+        Method getChanges = null;
+        Method setChanges = null;
+        try {
+            Class<?> wrapperClass = Class.forName("com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerSectionBlocksUpdate");
+            constructor = wrapperClass.getConstructor(PacketSendEvent.class);
+            getChanges = wrapperClass.getMethod("getBlockChanges");
+            for (Method method : wrapperClass.getMethods()) {
+                if (method.getName().equals("setBlockChanges")) {
+                    setChanges = method;
+                    break;
+                }
+            }
+        } catch (ClassNotFoundException | NoSuchMethodException ignored) {
+            // PacketEvents build without WrapperPlayServerSectionBlocksUpdate support.
+        }
+        SECTION_BLOCKS_UPDATE_CONSTRUCTOR = constructor;
+        SECTION_BLOCKS_UPDATE_GET_CHANGES_METHOD = getChanges;
+        SECTION_BLOCKS_UPDATE_SET_CHANGES_METHOD = setChanges;
+    }
 
     public ChunkPacketListenerPE(TazAntixRAYPlugin plugin) {
         this.plugin = plugin;
@@ -201,10 +228,13 @@ public class ChunkPacketListenerPE implements PacketListener {
 
     private void handleSingleBlockChange(PacketSendEvent event, Player player, boolean isPlayerInHidingState) {
         WrapperPlayServerBlockChange blockChange = new WrapperPlayServerBlockChange(event);
-        BlockPosition position = blockChange.getBlockPosition();
-        if (position == null) return;
+        Object position = blockChange.getBlockPosition();
+        int[] coordinates = extractBlockCoordinates(position);
+        if (coordinates == null) {
+            return;
+        }
 
-        if (!shouldObfuscateBlock(player, isPlayerInHidingState, position.getX(), position.getY(), position.getZ())) {
+        if (!shouldObfuscateBlock(player, isPlayerInHidingState, coordinates[0], coordinates[1], coordinates[2])) {
             return;
         }
 
@@ -217,8 +247,13 @@ public class ChunkPacketListenerPE implements PacketListener {
 
     private void handleMultiBlockChange(PacketSendEvent event, Player player, boolean isPlayerInHidingState) {
         WrapperPlayServerMultiBlockChange multiBlockChange = new WrapperPlayServerMultiBlockChange(event);
-        BlockChangeRecord[] records = multiBlockChange.getBlockChangeRecords();
-        if (records == null || records.length == 0) {
+        Object recordsRaw = multiBlockChange.getBlockChangeRecords();
+        if (recordsRaw == null || !recordsRaw.getClass().isArray()) {
+            return;
+        }
+
+        int length = Array.getLength(recordsRaw);
+        if (length == 0) {
             return;
         }
 
@@ -228,27 +263,42 @@ public class ChunkPacketListenerPE implements PacketListener {
             return;
         }
 
-        for (BlockChangeRecord record : records) {
-            if (record == null) continue;
-            BlockPosition position = record.getBlockPosition();
-            if (position == null) continue;
+        for (int i = 0; i < length; i++) {
+            Object record = Array.get(recordsRaw, i);
+            if (record == null) {
+                continue;
+            }
 
-            if (shouldObfuscateBlock(player, isPlayerInHidingState, position.getX(), position.getY(), position.getZ())) {
-                record.setBlockState(replacement);
+            Object position = extractBlockPosition(record);
+            int[] coordinates = extractBlockCoordinates(position);
+            if (coordinates == null) {
+                continue;
+            }
+
+            if (shouldObfuscateBlock(player, isPlayerInHidingState, coordinates[0], coordinates[1], coordinates[2]) &&
+                    trySetBlockState(record, replacement)) {
                 modified = true;
             }
         }
 
         if (modified) {
-            multiBlockChange.setBlockChangeRecords(records);
             event.markForReEncode(true);
         }
     }
 
     private void handleSectionBlockUpdate(PacketSendEvent event, Player player, boolean isPlayerInHidingState) {
-        WrapperPlayServerSectionBlocksUpdate sectionBlocksUpdate = new WrapperPlayServerSectionBlocksUpdate(event);
-        SectionBlockChangeEntry[] entries = sectionBlocksUpdate.getBlockChanges();
-        if (entries == null || entries.length == 0) {
+        Object sectionBlocksUpdate = instantiateSectionBlocksWrapper(event);
+        if (sectionBlocksUpdate == null || SECTION_BLOCKS_UPDATE_GET_CHANGES_METHOD == null) {
+            return;
+        }
+
+        Object entriesRaw = invokeSectionBlocksGetChanges(sectionBlocksUpdate);
+        if (entriesRaw == null || !entriesRaw.getClass().isArray()) {
+            return;
+        }
+
+        int length = Array.getLength(entriesRaw);
+        if (length == 0) {
             return;
         }
 
@@ -258,19 +308,26 @@ public class ChunkPacketListenerPE implements PacketListener {
             return;
         }
 
-        for (SectionBlockChangeEntry entry : entries) {
-            if (entry == null) continue;
-            BlockPosition position = entry.getBlockPosition();
-            if (position == null) continue;
+        for (int i = 0; i < length; i++) {
+            Object entry = Array.get(entriesRaw, i);
+            if (entry == null) {
+                continue;
+            }
 
-            if (shouldObfuscateBlock(player, isPlayerInHidingState, position.getX(), position.getY(), position.getZ())) {
-                entry.setBlockState(replacement);
+            Object position = extractBlockPosition(entry);
+            int[] coordinates = extractBlockCoordinates(position);
+            if (coordinates == null) {
+                continue;
+            }
+
+            if (shouldObfuscateBlock(player, isPlayerInHidingState, coordinates[0], coordinates[1], coordinates[2]) &&
+                    trySetBlockState(entry, replacement)) {
                 modified = true;
             }
         }
 
         if (modified) {
-            sectionBlocksUpdate.setBlockChanges(entries);
+            invokeSectionBlocksSetChanges(sectionBlocksUpdate, entriesRaw);
             event.markForReEncode(true);
         }
     }
@@ -290,5 +347,107 @@ public class ChunkPacketListenerPE implements PacketListener {
         }
 
         return !AntiXrayUtils.isBlockInLimitedArea(player, blockX, blockZ, plugin.getLimitedAreaChunkRadius());
+    }
+
+    private Object extractBlockPosition(Object holder) {
+        if (holder == null) {
+            return null;
+        }
+
+        try {
+            Method method = holder.getClass().getMethod("getBlockPosition");
+            return method.invoke(holder);
+        } catch (NoSuchMethodException | IllegalAccessException | InvocationTargetException ignored) {
+            return null;
+        }
+    }
+
+    private int[] extractBlockCoordinates(Object blockPosition) {
+        if (blockPosition == null) {
+            return null;
+        }
+
+        Integer x = extractCoordinate(blockPosition, new String[]{"getX", "getBlockX", "x"});
+        Integer y = extractCoordinate(blockPosition, new String[]{"getY", "getBlockY", "y"});
+        Integer z = extractCoordinate(blockPosition, new String[]{"getZ", "getBlockZ", "z"});
+
+        if (x == null || y == null || z == null) {
+            return null;
+        }
+
+        return new int[]{x, y, z};
+    }
+
+    private Integer extractCoordinate(Object target, String[] methodCandidates) {
+        for (String methodName : methodCandidates) {
+            try {
+                Method method = target.getClass().getMethod(methodName);
+                Object value = method.invoke(target);
+                if (value instanceof Number number) {
+                    return number.intValue();
+                }
+            } catch (NoSuchMethodException ignored) {
+                // Try the next candidate.
+            } catch (IllegalAccessException | InvocationTargetException ex) {
+                plugin.debugLog("Failed to read coordinate via " + methodName + ": " + ex.getMessage());
+                return null;
+            }
+        }
+        return null;
+    }
+
+    private boolean trySetBlockState(Object target, WrappedBlockState replacement) {
+        if (target == null || replacement == null) {
+            return false;
+        }
+
+        try {
+            Method method = target.getClass().getMethod("setBlockState", WrappedBlockState.class);
+            method.invoke(target, replacement);
+            return true;
+        } catch (NoSuchMethodException ignored) {
+            return false;
+        } catch (IllegalAccessException | InvocationTargetException ex) {
+            plugin.debugLog("Failed to set block state via reflection: " + ex.getMessage());
+            return false;
+        }
+    }
+
+    private Object instantiateSectionBlocksWrapper(PacketSendEvent event) {
+        if (SECTION_BLOCKS_UPDATE_CONSTRUCTOR == null) {
+            return null;
+        }
+
+        try {
+            return SECTION_BLOCKS_UPDATE_CONSTRUCTOR.newInstance(event);
+        } catch (InstantiationException | IllegalAccessException | InvocationTargetException ex) {
+            plugin.debugLog("Unable to create WrapperPlayServerSectionBlocksUpdate: " + ex.getMessage());
+            return null;
+        }
+    }
+
+    private Object invokeSectionBlocksGetChanges(Object wrapper) {
+        if (wrapper == null || SECTION_BLOCKS_UPDATE_GET_CHANGES_METHOD == null) {
+            return null;
+        }
+
+        try {
+            return SECTION_BLOCKS_UPDATE_GET_CHANGES_METHOD.invoke(wrapper);
+        } catch (IllegalAccessException | InvocationTargetException ex) {
+            plugin.debugLog("Failed to read section block changes: " + ex.getMessage());
+            return null;
+        }
+    }
+
+    private void invokeSectionBlocksSetChanges(Object wrapper, Object entries) {
+        if (wrapper == null || entries == null || SECTION_BLOCKS_UPDATE_SET_CHANGES_METHOD == null) {
+            return;
+        }
+
+        try {
+            SECTION_BLOCKS_UPDATE_SET_CHANGES_METHOD.invoke(wrapper, entries);
+        } catch (IllegalAccessException | InvocationTargetException ex) {
+            plugin.debugLog("Failed to write section block changes: " + ex.getMessage());
+        }
     }
 }
