@@ -26,6 +26,7 @@ public class ChunkPacketListenerPE implements PacketListener {
     private static final Constructor<?> SECTION_BLOCKS_UPDATE_CONSTRUCTOR;
     private static final Method SECTION_BLOCKS_UPDATE_GET_CHANGES_METHOD;
     private static final Method SECTION_BLOCKS_UPDATE_SET_CHANGES_METHOD;
+    private static final PacketType.Play.Server SECTION_BLOCKS_UPDATE_PACKET_TYPE;
 
     static {
         Constructor<?> constructor = null;
@@ -47,6 +48,15 @@ public class ChunkPacketListenerPE implements PacketListener {
         SECTION_BLOCKS_UPDATE_CONSTRUCTOR = constructor;
         SECTION_BLOCKS_UPDATE_GET_CHANGES_METHOD = getChanges;
         SECTION_BLOCKS_UPDATE_SET_CHANGES_METHOD = setChanges;
+        SECTION_BLOCKS_UPDATE_PACKET_TYPE = resolvePacketType("SECTION_BLOCKS_UPDATE");
+    }
+
+    private static PacketType.Play.Server resolvePacketType(String fieldName) {
+        try {
+            return (PacketType.Play.Server) PacketType.Play.Server.class.getField(fieldName).get(null);
+        } catch (NoSuchFieldException | IllegalAccessException ignored) {
+            return null;
+        }
     }
 
     public ChunkPacketListenerPE(TazAntixRAYPlugin plugin) {
@@ -69,8 +79,10 @@ public class ChunkPacketListenerPE implements PacketListener {
             case CHUNK_DATA -> handleChunkData(event, player, isPlayerInHidingState);
             case BLOCK_CHANGE -> handleSingleBlockChange(event, player, isPlayerInHidingState);
             case MULTI_BLOCK_CHANGE -> handleMultiBlockChange(event, player, isPlayerInHidingState);
-            case SECTION_BLOCKS_UPDATE -> handleSectionBlockUpdate(event, player, isPlayerInHidingState);
             default -> {
+                if (SECTION_BLOCKS_UPDATE_PACKET_TYPE != null && packetType == SECTION_BLOCKS_UPDATE_PACKET_TYPE) {
+                    handleSectionBlockUpdate(event, player, isPlayerInHidingState);
+                }
             }
         }
     }
@@ -247,7 +259,7 @@ public class ChunkPacketListenerPE implements PacketListener {
 
     private void handleMultiBlockChange(PacketSendEvent event, Player player, boolean isPlayerInHidingState) {
         WrapperPlayServerMultiBlockChange multiBlockChange = new WrapperPlayServerMultiBlockChange(event);
-        Object recordsRaw = multiBlockChange.getBlockChangeRecords();
+        Object recordsRaw = getMultiBlockChangeRecords(multiBlockChange);
         if (recordsRaw == null || !recordsRaw.getClass().isArray()) {
             return;
         }
@@ -376,6 +388,26 @@ public class ChunkPacketListenerPE implements PacketListener {
         }
 
         return new int[]{x, y, z};
+    }
+
+    private Object getMultiBlockChangeRecords(WrapperPlayServerMultiBlockChange multiBlockChange) {
+        if (multiBlockChange == null) {
+            return null;
+        }
+
+        for (String methodName : new String[]{"getBlockChangeRecords", "getRecords", "getBlockChanges"}) {
+            try {
+                Method method = multiBlockChange.getClass().getMethod(methodName);
+                return method.invoke(multiBlockChange);
+            } catch (NoSuchMethodException ignored) {
+                // Try the next method name.
+            } catch (IllegalAccessException | InvocationTargetException ex) {
+                plugin.debugLog("Failed to read multi-block change records via " + methodName + ": " + ex.getMessage());
+                return null;
+            }
+        }
+
+        return null;
     }
 
     private Integer extractCoordinate(Object target, String[] methodCandidates) {
