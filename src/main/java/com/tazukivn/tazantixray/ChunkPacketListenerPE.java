@@ -68,6 +68,10 @@ public class ChunkPacketListenerPE implements PacketListener {
         User user = event.getUser();
         if (user == null) return;
 
+        if (user.getUUID() == null) {
+            return; // status pings & other non-player connections have no UUID
+        }
+
         Player player = Bukkit.getPlayer(user.getUUID());
         if (player == null || !player.isOnline() || !plugin.isWorldWhitelisted(player.getWorld().getName())) {
             return;
