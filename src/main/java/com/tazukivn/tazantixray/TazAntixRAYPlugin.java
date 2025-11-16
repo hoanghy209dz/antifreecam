@@ -27,6 +27,7 @@ import org.bukkit.event.player.*;
 
 // Import sự kiện PlayerLoginEvent
 import org.bukkit.event.player.PlayerLoginEvent;
+import org.bukkit.plugin.IllegalPluginAccessException;
 import org.bukkit.plugin.java.JavaPlugin;
 
 import java.io.File;
@@ -40,6 +41,7 @@ public class TazAntixRAYPlugin extends JavaPlugin implements Listener, CommandEx
     private final Set<UUID> teleportGracePeriod = ConcurrentHashMap.newKeySet();
     private static TazAntixRAYPlugin instance;
     private WrappedBlockState replacementBlockState;
+    private boolean packetEventsInitialized = false;
 
     private String replacementMode = "DECEPTIVE";
     private boolean debugMode = false;
@@ -91,23 +93,23 @@ public class TazAntixRAYPlugin extends JavaPlugin implements Listener, CommandEx
         loadConfigValues();
 
         final PacketEventsAPI packetEventsAPI = PacketEvents.getAPI();
+        if (packetEventsAPI == null) {
+            getLogger().severe("PacketEvents API not found! Make sure the PacketEvents plugin is installed.");
+            getServer().getPluginManager().disablePlugin(this);
+            return;
+        }
+
         if (!packetEventsAPI.isLoaded()) {
-            getLogger().severe("PacketEvents API not loaded!");
-            getServer().getPluginManager().disablePlugin(this);
-            return;
+            try {
+                packetEventsAPI.load();
+            } catch (Exception ex) {
+                getLogger().severe("PacketEvents API failed to load. Disabling plugin.");
+                ex.printStackTrace();
+                getServer().getPluginManager().disablePlugin(this);
+                return;
+            }
         }
 
-        try {
-            packetEventsAPI.init();
-        } catch (Exception ex) {
-            getLogger().severe("Failed to initialize PacketEvents! Disabling plugin.");
-            ex.printStackTrace();
-            getServer().getPluginManager().disablePlugin(this);
-            return;
-        }
-
-        initializeReplacementBlock();
-        packetEventsAPI.getEventManager().registerListener(new ChunkPacketListenerPE(this), PacketListenerPriority.NORMAL);
         Bukkit.getServer().getPluginManager().registerEvents(this, this);
         registerCommands();
 
@@ -119,6 +121,8 @@ public class TazAntixRAYPlugin extends JavaPlugin implements Listener, CommandEx
                 handlePlayerInitialState(player);
             }
         }
+
+        schedulePacketEventsInitialization(packetEventsAPI);
     }
 
     private void startEntityHidingTask() {
@@ -262,8 +266,13 @@ public class TazAntixRAYPlugin extends JavaPlugin implements Listener, CommandEx
 
     @Override
     public void onDisable() {
-        if (PacketEvents.getAPI() != null && PacketEvents.getAPI().isLoaded()) {
-            PacketEvents.getAPI().terminate();
+        if (packetEventsInitialized && PacketEvents.getAPI() != null) {
+            try {
+                PacketEvents.getAPI().terminate();
+            } catch (Exception ex) {
+                getLogger().warning("Failed to terminate PacketEvents cleanly: " + ex.getMessage());
+            }
+            packetEventsInitialized = false;
         }
         playerHiddenState.clear();
         teleportGracePeriod.clear();
@@ -483,6 +492,20 @@ public class TazAntixRAYPlugin extends JavaPlugin implements Listener, CommandEx
 
     @Override
     public void onLoad() {
+        PacketEventsAPI api = PacketEvents.getAPI();
+        if (api != null) {
+            if (!api.isLoaded()) {
+                try {
+                    api.load();
+                } catch (Exception e) {
+                    getLogger().severe("PacketEvents API detected but failed to load during onLoad.");
+                    e.printStackTrace();
+                    getServer().getPluginManager().disablePlugin(this);
+                }
+            }
+            return;
+        }
+
         try {
             PacketEvents.setAPI(SpigotPacketEventsBuilder.build(this));
             PacketEvents.getAPI().getSettings().checkForUpdates(false).bStats(true);
@@ -656,6 +679,30 @@ public class TazAntixRAYPlugin extends JavaPlugin implements Listener, CommandEx
 
     public boolean isUndergroundProtectionEnabled() {
         return undergroundProtectionEnabled;
+    }
+
+    private void schedulePacketEventsInitialization(PacketEventsAPI packetEventsAPI) {
+        PlatformCompatibility.runTaskLater(this, () -> {
+            if (!isEnabled()) {
+                getLogger().warning("Plugin disabled before PacketEvents.init() could run.");
+                return;
+            }
+
+            try {
+                packetEventsAPI.init();
+                packetEventsInitialized = true;
+                initializeReplacementBlock();
+                packetEventsAPI.getEventManager().registerListener(new ChunkPacketListenerPE(this), PacketListenerPriority.NORMAL);
+                debugLog("PacketEvents initialized via delayed task.");
+            } catch (IllegalPluginAccessException ex) {
+                getLogger().warning("PacketEvents.init() was called too early; retrying next tick.");
+                schedulePacketEventsInitialization(packetEventsAPI);
+            } catch (Exception ex) {
+                getLogger().severe("Failed to initialize PacketEvents! Disabling plugin.");
+                ex.printStackTrace();
+                getServer().getPluginManager().disablePlugin(this);
+            }
+        }, 1L);
     }
 
     private void initializeReplacementBlock() {
