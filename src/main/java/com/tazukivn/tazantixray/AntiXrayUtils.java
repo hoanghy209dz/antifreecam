@@ -68,29 +68,36 @@ public class AntiXrayUtils {
     public static WrappedBlockState getReplacementBlock(TazAntixRAYPlugin plugin, WrappedBlockState airState) {
         String blockType = plugin.getConfig().getString("performance.replacement.block-type", "air");
 
+        if (blockType.equalsIgnoreCase("air")) {
+            return airState;
+        }
+
+        Material configuredMaterial = Material.matchMaterial(blockType.toUpperCase());
+        if (configuredMaterial != null && configuredMaterial.isBlock()) {
+            try {
+                // Tạo block data chuẩn từ Bukkit để luôn có chuỗi block-state hợp lệ
+                String blockStateString = configuredMaterial.createBlockData().getAsString();
+                WrappedBlockState state = WrappedBlockState.getByString(blockStateString);
+                if (state != null) {
+                    return state;
+                }
+            } catch (Exception e) {
+                plugin.getLogger().warning("Failed to create block state for replacement material '" + blockType + "'. Falling back to air.");
+            }
+        }
+
         if (blockType.equalsIgnoreCase("deepslate")) {
             try {
-                // [SỬA] Cung cấp trạng thái block (block state) đầy đủ.
-                // "minecraft:deepslate" không phải là một trạng thái đầy đủ vì nó có thuộc tính 'axis'.
-                // Trạng thái mặc định của nó là "minecraft:deepslate[axis=y]".
-                return WrappedBlockState.getByString("minecraft:deepslate[axis=y]");
-            } catch (Exception e) {
-                plugin.getLogger().warning("Failed to get deepslate block state (minecraft:deepslate[axis=y]), falling back to air");
-                return airState;
-            }
+                return WrappedBlockState.getByString("minecraft:deepslate");
+            } catch (Exception ignored) { }
         }
 
         if (blockType.equalsIgnoreCase("stone")) {
             try {
-                // "minecraft:stone" là một trạng thái đầy đủ (không có thuộc tính) nên nó hoạt động
                 return WrappedBlockState.getByString("minecraft:stone");
-            } catch (Exception e) {
-                plugin.getLogger().warning("Failed to get stone block state, falling back to air");
-                return airState;
-            }
+            } catch (Exception ignored) { }
         }
 
-        // Default to air
         return airState;
     }
 

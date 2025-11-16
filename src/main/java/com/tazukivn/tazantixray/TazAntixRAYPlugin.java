@@ -97,6 +97,15 @@ public class TazAntixRAYPlugin extends JavaPlugin implements Listener, CommandEx
             return;
         }
 
+        try {
+            packetEventsAPI.init();
+        } catch (Exception ex) {
+            getLogger().severe("Failed to initialize PacketEvents! Disabling plugin.");
+            ex.printStackTrace();
+            getServer().getPluginManager().disablePlugin(this);
+            return;
+        }
+
         initializeReplacementBlock();
         packetEventsAPI.getEventManager().registerListener(new ChunkPacketListenerPE(this), PacketListenerPriority.NORMAL);
         Bukkit.getServer().getPluginManager().registerEvents(this, this);
@@ -294,6 +303,7 @@ public class TazAntixRAYPlugin extends JavaPlugin implements Listener, CommandEx
             boolean isHidden = playerHiddenState.getOrDefault(player.getUniqueId(), false);
             if (isLimitedAreaEnabled() && !isHidden) {
                 refreshLimitedAreaChunks(player);
+                refreshChunksOutsideLimitedArea(player);
             } else {
                 refreshViewGradually(player, null);
             }
@@ -351,7 +361,9 @@ public class TazAntixRAYPlugin extends JavaPlugin implements Listener, CommandEx
             int radius = getLimitedAreaChunkRadius();
             for (int x = playerChunkX - radius; x <= playerChunkX + radius; x++) {
                 for (int z = playerChunkZ - radius; z <= playerChunkZ + radius; z++) {
-                    world.refreshChunk(x, z);
+                    if (world.isChunkLoaded(x, z)) {
+                        world.refreshChunk(x, z);
+                    }
                 }
             }
         });
@@ -373,7 +385,9 @@ public class TazAntixRAYPlugin extends JavaPlugin implements Listener, CommandEx
 
             int radius = getLimitedAreaChunkRadius();
             Set<Long> oldChunks = new HashSet<>();
+            Set<Long> newChunks = new HashSet<>();
             List<Chunk> newChunksToRefresh = new ArrayList<>();
+            List<Chunk> chunksLeavingBubble = new ArrayList<>();
 
             for (int x = oldChunkX - radius; x <= oldChunkX + radius; x++) {
                 for (int z = oldChunkZ - radius; z <= oldChunkZ + radius; z++) {
@@ -382,7 +396,9 @@ public class TazAntixRAYPlugin extends JavaPlugin implements Listener, CommandEx
             }
             for (int x = newChunkX - radius; x <= newChunkX + radius; x++) {
                 for (int z = newChunkZ - radius; z <= newChunkZ + radius; z++) {
-                    if (!oldChunks.contains(Chunk.getChunkKey(x, z))) {
+                    long key = Chunk.getChunkKey(x, z);
+                    newChunks.add(key);
+                    if (!oldChunks.contains(key)) {
                         if (world.isChunkLoaded(x, z)) {
                             newChunksToRefresh.add(world.getChunkAt(x, z));
                         }
@@ -390,9 +406,27 @@ public class TazAntixRAYPlugin extends JavaPlugin implements Listener, CommandEx
                 }
             }
 
+            if (!oldChunks.isEmpty()) {
+                for (long key : oldChunks) {
+                    if (newChunks.contains(key)) continue;
+                    int chunkX = chunkXFromKey(key);
+                    int chunkZ = chunkZFromKey(key);
+                    if (world.isChunkLoaded(chunkX, chunkZ)) {
+                        chunksLeavingBubble.add(world.getChunkAt(chunkX, chunkZ));
+                    }
+                }
+            }
+
             if (!newChunksToRefresh.isEmpty()) {
                 debugLog("Limited-area fast refresh for " + player.getName() + ", refreshing " + newChunksToRefresh.size() + " new chunks.");
                 for(Chunk chunk : newChunksToRefresh) {
+                    world.refreshChunk(chunk.getX(), chunk.getZ());
+                }
+            }
+
+            if (!chunksLeavingBubble.isEmpty()) {
+                debugLog("Limited-area: re-obfuscating " + chunksLeavingBubble.size() + " chunks that left the bubble for " + player.getName() + ".");
+                for (Chunk chunk : chunksLeavingBubble) {
                     world.refreshChunk(chunk.getX(), chunk.getZ());
                 }
             }
@@ -699,5 +733,43 @@ public class TazAntixRAYPlugin extends JavaPlugin implements Listener, CommandEx
 
     public boolean isHideEntitiesEnabled() {
         return hideEntitiesEnabled;
+    }
+
+    private void refreshChunksOutsideLimitedArea(Player player) {
+        if (!player.isOnline()) return;
+
+        getFoliaLib().getImpl().runAtEntity(player, task -> {
+            World world = player.getWorld();
+            Location location = player.getLocation();
+            int centerChunkX = location.getChunk().getX();
+            int centerChunkZ = location.getChunk().getZ();
+            int viewDistance = player.getClientViewDistance();
+            int bubbleRadius = getLimitedAreaChunkRadius();
+
+            List<Chunk> chunksToRefresh = new ArrayList<>();
+            for (int x = centerChunkX - viewDistance; x <= centerChunkX + viewDistance; x++) {
+                for (int z = centerChunkZ - viewDistance; z <= centerChunkZ + viewDistance; z++) {
+                    if (!world.isChunkLoaded(x, z)) continue;
+
+                    boolean insideBubble = Math.abs(x - centerChunkX) <= bubbleRadius && Math.abs(z - centerChunkZ) <= bubbleRadius;
+                    if (insideBubble) continue;
+
+                    chunksToRefresh.add(world.getChunkAt(x, z));
+                }
+            }
+
+            if (!chunksToRefresh.isEmpty()) {
+                debugLog("Limited-area: refreshing " + chunksToRefresh.size() + " chunks outside the bubble for " + player.getName());
+                refreshViewGradually(player, chunksToRefresh);
+            }
+        });
+    }
+
+    private int chunkXFromKey(long key) {
+        return (int) (key & 0xffffffffL);
+    }
+
+    private int chunkZFromKey(long key) {
+        return (int) ((key >>> 32) & 0xffffffffL);
     }
 }
