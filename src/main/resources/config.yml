@@ -76,6 +76,11 @@ performance:
     enabled: true
     chunk-radius: 3
     apply-only-near-player: true
+    smart-refresh:
+      enabled: true
+      min-move-distance: 2.5
+      min-rotation-degrees: 25.0
+      cooldown-ticks: 5
 
   # Cài đặt thay thế block.
   replacement:

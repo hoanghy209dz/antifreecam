@@ -38,6 +38,7 @@ public class TazAntixRAYPlugin extends JavaPlugin implements Listener, CommandEx
 
     public final Map<UUID, Boolean> playerHiddenState = new ConcurrentHashMap<>();
     private final Map<UUID, Long> refreshCooldowns = new ConcurrentHashMap<>();
+    private final Map<UUID, Long> limitedAreaSmartRefreshTimestamps = new ConcurrentHashMap<>();
     private final Set<UUID> teleportGracePeriod = ConcurrentHashMap.newKeySet();
     private static TazAntixRAYPlugin instance;
     private WrappedBlockState replacementBlockState;
@@ -50,6 +51,10 @@ public class TazAntixRAYPlugin extends JavaPlugin implements Listener, CommandEx
 
     private boolean limitedAreaEnabled = false;
     private int limitedAreaChunkRadius = 3;
+    private boolean limitedAreaSmartRefreshEnabled = true;
+    private double limitedAreaSmartRefreshMinDistance = 2.5D;
+    private float limitedAreaSmartRefreshMinRotation = 25F;
+    private int limitedAreaSmartRefreshCooldownMillis = 250;
     private boolean undergroundProtectionEnabled = true;
     private boolean hideEntitiesEnabled = true;
     private int entityCheckIntervalTicks;
@@ -276,6 +281,7 @@ public class TazAntixRAYPlugin extends JavaPlugin implements Listener, CommandEx
         }
         playerHiddenState.clear();
         teleportGracePeriod.clear();
+        limitedAreaSmartRefreshTimestamps.clear();
         getFoliaLib().getScheduler().cancelAllTasks();
     }
 
@@ -444,15 +450,10 @@ public class TazAntixRAYPlugin extends JavaPlugin implements Listener, CommandEx
 
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     public void onPlayerMove(PlayerMoveEvent event) {
-        if (event.getFrom().getBlockX() == event.getTo().getBlockX() && event.getFrom().getBlockY() == event.getTo().getBlockY() && event.getFrom().getBlockZ() == event.getTo().getBlockZ())
-            return;
-
         Player player = event.getPlayer();
         if (!isWorldWhitelisted(player.getWorld().getName())) return;
 
         long currentTime = System.currentTimeMillis();
-        if (currentTime < refreshCooldowns.getOrDefault(player.getUniqueId(), 0L)) return;
-
         boolean oldState = playerHiddenState.getOrDefault(player.getUniqueId(), false);
         double currentY = event.getTo().getY();
         double protectionY = getConfig().getDouble("antixray.protection-y-level", 31.0);
@@ -468,16 +469,25 @@ public class TazAntixRAYPlugin extends JavaPlugin implements Listener, CommandEx
             } else {
                 triggerSmartRefresh(player, !newState);
             }
+            return;
+        }
 
-        } else if (isLimitedAreaEnabled() && !newState) {
-            int oldChunkX = event.getFrom().getChunk().getX();
-            int oldChunkZ = event.getFrom().getChunk().getZ();
-            int newChunkX = event.getTo().getChunk().getX();
-            int newChunkZ = event.getTo().getChunk().getZ();
-            if (oldChunkX != newChunkX || oldChunkZ != newChunkZ) {
-                updateLimitedAreaView(player, oldChunkX, oldChunkZ);
-                refreshCooldowns.put(player.getUniqueId(), currentTime + 250);
-            }
+        if (!isLimitedAreaEnabled() || newState) {
+            return;
+        }
+
+        int oldChunkX = event.getFrom().getChunk().getX();
+        int oldChunkZ = event.getFrom().getChunk().getZ();
+        int newChunkX = event.getTo().getChunk().getX();
+        int newChunkZ = event.getTo().getChunk().getZ();
+
+        if (oldChunkX != newChunkX || oldChunkZ != newChunkZ) {
+            updateLimitedAreaView(player, oldChunkX, oldChunkZ);
+            return;
+        }
+
+        if (shouldTriggerLimitedAreaSmartRefresh(player, event, currentTime)) {
+            refreshLimitedAreaChunks(player);
         }
     }
 
@@ -487,6 +497,7 @@ public class TazAntixRAYPlugin extends JavaPlugin implements Listener, CommandEx
         playerHiddenState.remove(uuid);
         refreshCooldowns.remove(uuid);
         teleportGracePeriod.remove(uuid);
+        limitedAreaSmartRefreshTimestamps.remove(uuid);
         cancelGradualRefresh(event.getPlayer());
     }
 
@@ -642,6 +653,18 @@ public class TazAntixRAYPlugin extends JavaPlugin implements Listener, CommandEx
         replacementMode = config.getString("performance.replacement.mode", "DECEPTIVE").toUpperCase();
         limitedAreaEnabled = config.getBoolean("performance.limited-area.enabled", true);
         limitedAreaChunkRadius = config.getInt("performance.limited-area.chunk-radius", 3);
+        limitedAreaSmartRefreshEnabled = config.getBoolean("performance.limited-area.smart-refresh.enabled", true);
+        limitedAreaSmartRefreshMinDistance = config.getDouble("performance.limited-area.smart-refresh.min-move-distance", 2.5D);
+        limitedAreaSmartRefreshMinRotation = (float) config.getDouble("performance.limited-area.smart-refresh.min-rotation-degrees", 25D);
+        if (limitedAreaSmartRefreshMinDistance < 0.1D) {
+            limitedAreaSmartRefreshMinDistance = 0.1D;
+        }
+        if (limitedAreaSmartRefreshMinRotation < 1F) {
+            limitedAreaSmartRefreshMinRotation = 1F;
+        }
+        int smartRefreshCooldownTicks = config.getInt("performance.limited-area.smart-refresh.cooldown-ticks", 5);
+        if (smartRefreshCooldownTicks < 1) smartRefreshCooldownTicks = 1;
+        limitedAreaSmartRefreshCooldownMillis = smartRefreshCooldownTicks * 50;
         undergroundProtectionEnabled = config.getBoolean("antixray.underground-protection.enabled", true);
         hideEntitiesEnabled = config.getBoolean("performance.entities.hide-entities", true);
         entityCheckIntervalTicks = config.getInt("performance.entities.check-interval-ticks", 10);
@@ -818,5 +841,42 @@ public class TazAntixRAYPlugin extends JavaPlugin implements Listener, CommandEx
 
     private int chunkZFromKey(long key) {
         return (int) ((key >>> 32) & 0xffffffffL);
+    }
+
+    private boolean shouldTriggerLimitedAreaSmartRefresh(Player player, PlayerMoveEvent event, long currentTimeMillis) {
+        if (!limitedAreaSmartRefreshEnabled) {
+            return false;
+        }
+
+        double dx = event.getTo().getX() - event.getFrom().getX();
+        double dy = event.getTo().getY() - event.getFrom().getY();
+        double dz = event.getTo().getZ() - event.getFrom().getZ();
+        double distanceSquared = dx * dx + dy * dy + dz * dz;
+
+        float yawDelta = computeAngleDelta(event.getFrom().getYaw(), event.getTo().getYaw());
+        float pitchDelta = Math.abs(event.getTo().getPitch() - event.getFrom().getPitch());
+
+        double minDistanceSquared = limitedAreaSmartRefreshMinDistance * limitedAreaSmartRefreshMinDistance;
+        if (distanceSquared < minDistanceSquared
+                && yawDelta < limitedAreaSmartRefreshMinRotation
+                && pitchDelta < limitedAreaSmartRefreshMinRotation) {
+            return false;
+        }
+
+        long nextAllowed = limitedAreaSmartRefreshTimestamps.getOrDefault(player.getUniqueId(), 0L);
+        if (currentTimeMillis < nextAllowed) {
+            return false;
+        }
+
+        limitedAreaSmartRefreshTimestamps.put(player.getUniqueId(), currentTimeMillis + limitedAreaSmartRefreshCooldownMillis);
+        return true;
+    }
+
+    private float computeAngleDelta(float from, float to) {
+        float delta = Math.abs(to - from) % 360F;
+        if (delta > 180F) {
+            delta = 360F - delta;
+        }
+        return delta;
     }
 }
