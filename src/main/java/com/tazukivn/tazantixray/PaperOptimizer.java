@@ -4,15 +4,28 @@ import com.github.retrooper.packetevents.protocol.world.chunk.BaseChunk;
 import com.github.retrooper.packetevents.protocol.world.chunk.Column;
 import com.github.retrooper.packetevents.protocol.world.states.WrappedBlockState;
 import org.bukkit.World;
-import java.util.HashSet;
-import java.util.Set;
 
-public class PaperOptimizer { // Hoặc PaperOptimizer
+/**
+ * Handles low-level chunk obfuscation for Paper-like servers.
+ *
+ * Goal (user requirement):
+ *  - "Lấp sạch" mọi block dưới Y được cấu hình (antixray.hide-below-y)
+ *    để không còn thấy nước, lava, amethyst bud, spawner... khi load chunk
+ *    mới hoặc khi dịch chuyển / random teleport.
+ *
+ * Implementation:
+ *  - Chỉ làm việc trên dữ liệu Column (PacketEvents), không đụng tới world thực.
+ *  - Với mọi block có toạ độ Y <= hide-below-y:
+ *      + Nếu là bedrock ở vài layer thấp nhất thì giữ nguyên.
+ *      + Ngược lại: thay bằng REPLACEMENT_BLOCK (deepslate/stone/air tuỳ config).
+ *  - Tuyệt đối không thay block nào ở Y > hide-below-y để tránh nhìn thấy
+ *    deepslate "mọc" lên mặt đất.
+ */
+public class PaperOptimizer {
+
     private final TazAntixRAYPlugin plugin;
-    private WrappedBlockState REPLACEMENT_BLOCK;
-    private WrappedBlockState BEDROCK_BLOCK;
-    private final Set<Integer> airLikeIds = new HashSet<>();
-    private int bedrockGlobalId = -1; // Biến cache cho ID của bedrock
+    private WrappedBlockState replacementBlock;
+    private int bedrockId = -1;
 
     public PaperOptimizer(TazAntixRAYPlugin plugin) {
         this.plugin = plugin;
@@ -20,83 +33,116 @@ public class PaperOptimizer { // Hoặc PaperOptimizer
     }
 
     private void initializeBlockStates() {
-        // Sử dụng getReplacementBlock từ AntiXrayUtils để đảm bảo block thay thế luôn hợp lệ
-        this.REPLACEMENT_BLOCK = AntiXrayUtils.getReplacementBlock(plugin, WrappedBlockState.getByString("minecraft:air"));
-        try {
-            this.BEDROCK_BLOCK = WrappedBlockState.getByString("minecraft:bedrock");
-            this.bedrockGlobalId = BEDROCK_BLOCK.getGlobalId(); // Cache ID của bedrock
+        // Block dùng để "lấp" – lấy từ config (minecraft:deepslate / stone / air...)
+        this.replacementBlock = AntiXrayUtils.getReplacementBlock(
+                plugin,
+                WrappedBlockState.getByString("minecraft:air")
+        );
 
-            airLikeIds.add(WrappedBlockState.getByString("minecraft:air").getGlobalId());
-            airLikeIds.add(WrappedBlockState.getByString("minecraft:cave_air").getGlobalId());
-            airLikeIds.add(WrappedBlockState.getByString("minecraft:void_air").getGlobalId());
+        try {
+            WrappedBlockState bedrock = WrappedBlockState.getByString("minecraft:bedrock");
+            if (bedrock != null) {
+                this.bedrockId = bedrock.getGlobalId();
+            }
         } catch (Exception e) {
-            plugin.getLogger().severe("Failed to initialize essential block states for Optimizer!");
-            e.printStackTrace();
+            plugin.getLogger().warning("[PaperOptimizer] Failed to resolve bedrock block state.");
         }
     }
 
+    /**
+     * Thực hiện obfuscation cho một Column chunk.
+     *
+     * @param column              Dữ liệu chunk gửi tới client.
+     * @param world               World tương ứng (chỉ dùng để lấy min/max height).
+     * @param isPlayerAboveGround Có thể được dùng cho chiến lược khác, nhưng trong
+     *                            bản này không ảnh hưởng: mọi block dưới Y đều bị lấp.
+     * @return true nếu có chỉnh sửa dữ liệu chunk.
+     */
     public boolean handleAdvancedObfuscation(Column column, World world, boolean isPlayerAboveGround) {
-        if (REPLACEMENT_BLOCK == null) {
-            this.REPLACEMENT_BLOCK = AntiXrayUtils.getReplacementBlock(plugin, WrappedBlockState.getByString("minecraft:air"));
-            if (REPLACEMENT_BLOCK == null) return false;
-        }
-        // Đảm bảo bedrock ID đã được cache
-        if (this.bedrockGlobalId == -1) {
-            try {
-                this.bedrockGlobalId = WrappedBlockState.getByString("minecraft:bedrock").getGlobalId();
-            } catch (Exception e) {
-                plugin.getLogger().warning("Could not cache bedrock ID!");
+        if (column == null || world == null) return false;
+
+        if (replacementBlock == null) {
+            // Thử khởi tạo lại 1 lần nếu trước đó fail.
+            initializeBlockStates();
+            if (replacementBlock == null) {
+                plugin.getLogger().warning("[PaperOptimizer] Replacement block is null, skipping obfuscation.");
+                return false;
             }
         }
 
-        BaseChunk[] chunkSections = column.getChunks();
-        if (chunkSections == null) return false;
+        BaseChunk[] sections = column.getChunks();
+        if (sections == null || sections.length == 0) return false;
+
+        final int hideBelowY = plugin.getConfig().getInt("antixray.hide-below-y", 16);
+        final int worldMinY = world.getMinHeight();
+        final int worldMaxY = world.getMaxHeight();
+
+        // Nếu cấu hình nằm hoàn toàn dưới worldMinY thì thôi.
+        if (hideBelowY < worldMinY) {
+            return false;
+        }
 
         boolean modified = false;
-        int hideBelowY = plugin.getConfig().getInt("antixray.hide-below-y", 16);
-        int worldMinY = world.getMinHeight();
 
-        boolean isAggressiveMode = isPlayerAboveGround || plugin.getReplacementMode().equals("DECEPTIVE");
-
-        for (int i = 0; i < chunkSections.length; i++) {
-            BaseChunk section = chunkSections[i];
+        for (int sectionIndex = 0; sectionIndex < sections.length; sectionIndex++) {
+            BaseChunk section = sections[sectionIndex];
             if (section == null) continue;
 
-            int sectionMinY = worldMinY + (i * 16);
-            if (sectionMinY > hideBelowY) continue;
+            int sectionMinY = worldMinY + sectionIndex * 16;
+            int sectionMaxY = sectionMinY + 15;
+
+            // Nếu cả section nằm hoàn toàn trên hideBelowY thì bỏ qua luôn.
+            if (sectionMinY > hideBelowY || sectionMinY >= worldMaxY) {
+                continue;
+            }
+            // Nếu cả section nằm dưới worldMinY thì cũng bỏ qua.
+            if (sectionMaxY < worldMinY) {
+                continue;
+            }
 
             for (int y = 0; y < 16; y++) {
                 int currentY = sectionMinY + y;
-                if (currentY > hideBelowY) continue;
+
+                if (currentY > hideBelowY) {
+                    // Không đụng tới các block phía trên ngưỡng.
+                    continue;
+                }
+                if (currentY < worldMinY || currentY >= worldMaxY) {
+                    // Ngoài range thế giới – PacketEvents đôi khi vẫn có section placeholder.
+                    continue;
+                }
 
                 for (int x = 0; x < 16; x++) {
                     for (int z = 0; z < 16; z++) {
-
-                        if (!isAggressiveMode) {
-                            int globalId = section.get(x, y, z).getGlobalId();
-                            if (airLikeIds.contains(globalId)) {
-                                continue;
-                            }
+                        WrappedBlockState state = section.get(x, y, z);
+                        if (state == null) {
+                            continue;
                         }
 
-                        if (currentY <= worldMinY + 4 && currentY >= worldMinY) {
-                            int globalId = section.get(x, y, z).getGlobalId();
-                            if (globalId == this.bedrockGlobalId) {
-                                continue;
-                            }
+                        int id = state.getGlobalId();
+
+                        // Giữ nguyên bedrock ở vài layer thấp nhất để world không bị "thủng đáy".
+                        if (bedrockId != -1
+                                && id == bedrockId
+                                && currentY <= worldMinY + 4
+                                && currentY >= worldMinY) {
+                            continue;
                         }
 
-                        modified = true;
-                        section.set(x, y, z, REPLACEMENT_BLOCK);
+                        // Thay mọi block còn lại bằng replacementBlock (kể cả nước, lava, ore, amethyst...)
+                        if (state != replacementBlock) {
+                            section.set(x, y, z, replacementBlock);
+                            modified = true;
+                        }
                     }
                 }
             }
         }
 
-        // [ĐÃ XÓA] Logic setTileEntities(new TileEntity[0]) đã bị xóa khỏi đây vì nó GÂY LỖI.
-
         return modified;
     }
 
-    public void shutdown() { }
+    public void shutdown() {
+        // Hiện không có tài nguyên nào cần giải phóng.
+    }
 }

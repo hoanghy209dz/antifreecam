@@ -25,7 +25,7 @@ import org.bukkit.event.EventPriority;
 import org.bukkit.event.Listener;
 import org.bukkit.event.player.*;
 
-// [THÊM] Import sự kiện PlayerLoginEvent
+// Import sự kiện PlayerLoginEvent
 import org.bukkit.event.player.PlayerLoginEvent;
 import org.bukkit.plugin.java.JavaPlugin;
 
@@ -103,7 +103,7 @@ public class TazAntixRAYPlugin extends JavaPlugin implements Listener, CommandEx
         registerCommands();
 
         startSupervisorTask();
-        startEntityHidingTask(); // Bắt đầu tác vụ ẩn thực thể đã được sửa lỗi
+        startEntityHidingTask();
 
         for (Player player : Bukkit.getOnlinePlayers()) {
             if (isWorldWhitelisted(player.getWorld().getName())) {
@@ -152,7 +152,6 @@ public class TazAntixRAYPlugin extends JavaPlugin implements Listener, CommandEx
                         }
 
                         // Lên lịch ẩn/hiện thực thể trên luồng an toàn của chính thực thể đó.
-                        // Điều này cực kỳ quan trọng để đảm bảo tính ổn định trên Folia.
                         final boolean finalShouldHide = shouldHide;
                         getFoliaLib().getScheduler().runAtEntity(entity, (entityTask) -> {
                             if (finalShouldHide) {
@@ -263,7 +262,7 @@ public class TazAntixRAYPlugin extends JavaPlugin implements Listener, CommandEx
     }
 
     public void handlePlayerInitialState(Player player) {
-        if (player == null) return; // Không cần kiểm tra isOnline() vì onPlayerLogin event có thể player chưa online hẳn
+        if (player == null) return;
 
         if (!isWorldWhitelisted(player.getWorld().getName())) {
             if (playerHiddenState.getOrDefault(player.getUniqueId(), false)) {
@@ -373,52 +372,32 @@ public class TazAntixRAYPlugin extends JavaPlugin implements Listener, CommandEx
             if (oldChunkX == newChunkX && oldChunkZ == newChunkZ) return;
 
             int radius = getLimitedAreaChunkRadius();
-
-            // Tập chunk cũ / mới (dùng chunk key long)
             Set<Long> oldChunks = new HashSet<>();
-            Set<Long> newChunks = new HashSet<>();
-            List<Chunk> chunksToRefresh = new ArrayList<>();
+            List<Chunk> newChunksToRefresh = new ArrayList<>();
 
-            // Vùng cũ quanh (oldChunkX, oldChunkZ)
             for (int x = oldChunkX - radius; x <= oldChunkX + radius; x++) {
                 for (int z = oldChunkZ - radius; z <= oldChunkZ + radius; z++) {
                     oldChunks.add(Chunk.getChunkKey(x, z));
                 }
             }
-
-            // Vùng mới quanh (newChunkX, newChunkZ) + các chunk "mới bước vào"
             for (int x = newChunkX - radius; x <= newChunkX + radius; x++) {
                 for (int z = newChunkZ - radius; z <= newChunkZ + radius; z++) {
-                    long key = Chunk.getChunkKey(x, z);
-                    newChunks.add(key);
-                    // Chunk nằm trong vùng mới nhưng KHÔNG có trong vùng cũ → mới bước vào
-                    if (!oldChunks.contains(key) && world.isChunkLoaded(x, z)) {
-                        chunksToRefresh.add(world.getChunkAt(x, z));
+                    if (!oldChunks.contains(Chunk.getChunkKey(x, z))) {
+                        if (world.isChunkLoaded(x, z)) {
+                            newChunksToRefresh.add(world.getChunkAt(x, z));
+                        }
                     }
                 }
             }
 
-            // Các chunk "ra khỏi" vùng nhìn thấy → refresh lại để bị ẩn lại
-            for (int x = oldChunkX - radius; x <= oldChunkX + radius; x++) {
-                for (int z = oldChunkZ - radius; z <= oldChunkZ + radius; z++) {
-                    long key = Chunk.getChunkKey(x, z);
-                    if (!newChunks.contains(key) && world.isChunkLoaded(x, z)) {
-                        chunksToRefresh.add(world.getChunkAt(x, z));
-                    }
-                }
-            }
-
-            if (!chunksToRefresh.isEmpty()) {
-                debugLog("Limited-area fast refresh for " + player.getName()
-                        + ", refreshing " + chunksToRefresh.size() + " chunks (entering + leaving).");
-                for (Chunk chunk : chunksToRefresh) {
-                    // Ở đây dùng getX() / getZ() KHÔNG có tham số → đúng API Bukkit
+            if (!newChunksToRefresh.isEmpty()) {
+                debugLog("Limited-area fast refresh for " + player.getName() + ", refreshing " + newChunksToRefresh.size() + " new chunks.");
+                for(Chunk chunk : newChunksToRefresh) {
                     world.refreshChunk(chunk.getX(), chunk.getZ());
                 }
             }
         }, delay);
     }
-
 
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     public void onPlayerMove(PlayerMoveEvent event) {
@@ -543,7 +522,7 @@ public class TazAntixRAYPlugin extends JavaPlugin implements Listener, CommandEx
         }, initialDelay);
     }
 
-    // [MỚI] Sự kiện PlayerLoginEvent (ưu tiên THẤP NHẤT)
+    // Sự kiện PlayerLoginEvent (ưu tiên THẤP NHẤT)
     @EventHandler(priority = EventPriority.LOWEST, ignoreCancelled = true)
     public void onPlayerLogin(PlayerLoginEvent event) {
         Player player = event.getPlayer();
@@ -555,8 +534,7 @@ public class TazAntixRAYPlugin extends JavaPlugin implements Listener, CommandEx
             double protectionY = getConfig().getDouble("antixray.protection-y-level", 31.0);
             // Lấy Y-level của điểm spawn (hoặc vị trí đăng nhập)
             double currentY = player.getLocation().getY();
-            // Đôi khi location chưa đúng, ta nên giả định người chơi ở trên cao để an toàn
-            // Tuy nhiên, việc lấy Y-level từ spawn của thế giới có thể chính xác hơn
+
             if (player.hasPlayedBefore()) {
                 currentY = player.getLocation().getY();
             } else {
@@ -577,13 +555,10 @@ public class TazAntixRAYPlugin extends JavaPlugin implements Listener, CommandEx
         Player player = event.getPlayer();
         if (isWorldWhitelisted(player.getWorld().getName())) {
 
-            // [SỬA] Di chuyển `handlePlayerInitialState(player)` lên onPlayerLogin
+            // Logic `handlePlayerInitialState(player)` đã được chuyển lên onPlayerLogin
 
             getFoliaLib().getScheduler().runAtEntityLater(player, () -> {
                 if (!player.isOnline()) return;
-
-                // [XÓA] handlePlayerInitialState(player);
-                // Logic này đã được chạy ở onPlayerLogin, đảm bảo chunk đầu tiên đã bị ẩn.
 
                 // Tác vụ trễ này bây giờ chỉ chịu trách nhiệm làm mới (refresh)
                 // để áp dụng 'limited-area' nếu người chơi ở dưới lòng đất,
@@ -598,8 +573,6 @@ public class TazAntixRAYPlugin extends JavaPlugin implements Listener, CommandEx
     }
 
     private void loadConfigValues() {
-        // [SỬA] Đảm bảo saveDefaultConfig được gọi TRƯỚC khi reloadConfig
-        // để các giá trị mới (như join-pacing) được thêm vào nếu file config cũ
         saveDefaultConfig();
         reloadConfig();
         FileConfiguration config = getConfig();
