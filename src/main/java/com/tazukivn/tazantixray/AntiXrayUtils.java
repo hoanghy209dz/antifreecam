@@ -106,31 +106,38 @@ public class AntiXrayUtils {
     }
 
     /**
-     * Reflection-friendly overload: tolerate Packetevents forks khác package bằng
-     * cách đọc identifier qua getNamespacedIdentifier nếu có.
+     * Reflection-friendly overload: chịu được các bản PacketEvents thiếu
+     * getNamespacedIdentifier bằng cách thử nhiều tên hàm và cuối cùng fallback
+     * sang toString().
      */
     public static boolean isSensitiveBlockState(Object state) {
         if (state == null) return false;
 
         try {
-            if (state instanceof WrappedBlockState) {
-                String id = ((WrappedBlockState) state).getNamespacedIdentifier();
-                return isSensitiveIdentifier(id);
-            }
-
-            // Fallback: gọi phản chiếu để tránh lệ thuộc class cụ thể
-            String id = null;
-            try {
-                id = (String) state.getClass().getMethod("getNamespacedIdentifier").invoke(state);
-            } catch (NoSuchMethodException ignored) {
-                // Một vài build gọi là getIdentifier
-                id = (String) state.getClass().getMethod("getIdentifier").invoke(state);
-            }
-
+            String id = extractStateIdentifier(state);
             return isSensitiveIdentifier(id);
         } catch (Exception ignored) {
             return false;
         }
+    }
+
+    private static String extractStateIdentifier(Object state) throws Exception {
+        Class<?> type = state.getClass();
+        String[] candidates = new String[] {"getNamespacedIdentifier", "getIdentifier", "getName", "getRegistryName"};
+
+        for (String methodName : candidates) {
+            try {
+                Object value = type.getMethod(methodName).invoke(state);
+                if (value != null) {
+                    return value.toString();
+                }
+            } catch (NoSuchMethodException ignored) {
+                // thử phương thức tiếp theo
+            }
+        }
+
+        // Cuối cùng fallback vào toString để tránh ném lỗi
+        return state.toString();
     }
 
     private static boolean isSensitiveIdentifier(String id) {
