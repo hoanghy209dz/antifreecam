@@ -105,7 +105,7 @@ public class FoliaOptimizer {
                             continue;
                         }
 
-                        boolean inTargetRange = currentY <= hideBelowY || AntiXrayUtils.isSensitiveBlockState(state);
+                        boolean inTargetRange = currentY <= hideBelowY;
                         if (!inTargetRange) {
                             continue;
                         }
