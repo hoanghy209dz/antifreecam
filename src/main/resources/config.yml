@@ -81,6 +81,12 @@ performance:
       min-move-distance: 2.5
       min-rotation-degrees: 25.0
       cooldown-ticks: 5
+      # Kích hoạt "khẩn cấp" khi di chuyển quá nhanh (elytra/enderpearl) tính theo block.
+      emergency-distance: 8.0
+      emergency-cooldown-ticks: 4
+      # Làm mới trước một vài chunk theo hướng nhìn để các bức tường deepslate biến mất ngay.
+      lookahead-chunks: 2
+      reveal-on-enderpearl: true
 
   # Cài đặt thay thế block.
   replacement:

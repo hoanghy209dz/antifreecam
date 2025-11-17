@@ -29,6 +29,7 @@ import org.bukkit.event.player.*;
 import org.bukkit.event.player.PlayerLoginEvent;
 import org.bukkit.plugin.IllegalPluginAccessException;
 import org.bukkit.plugin.java.JavaPlugin;
+import org.bukkit.util.Vector;
 
 import java.io.File;
 import java.util.*;
@@ -39,6 +40,7 @@ public class TazAntixRAYPlugin extends JavaPlugin implements Listener, CommandEx
     public final Map<UUID, Boolean> playerHiddenState = new ConcurrentHashMap<>();
     private final Map<UUID, Long> refreshCooldowns = new ConcurrentHashMap<>();
     private final Map<UUID, Long> limitedAreaSmartRefreshTimestamps = new ConcurrentHashMap<>();
+    private final Map<UUID, Long> limitedAreaEmergencyCooldowns = new ConcurrentHashMap<>();
     private final Set<UUID> teleportGracePeriod = ConcurrentHashMap.newKeySet();
     private static TazAntixRAYPlugin instance;
     private WrappedBlockState replacementBlockState;
@@ -55,6 +57,10 @@ public class TazAntixRAYPlugin extends JavaPlugin implements Listener, CommandEx
     private double limitedAreaSmartRefreshMinDistance = 2.5D;
     private float limitedAreaSmartRefreshMinRotation = 25F;
     private int limitedAreaSmartRefreshCooldownMillis = 250;
+    private double limitedAreaEmergencyDistanceSquared = 0D;
+    private int limitedAreaEmergencyCooldownMillis = 250;
+    private int limitedAreaSightlineLookaheadChunks = 1;
+    private boolean limitedAreaEnderpearlRevealEnabled = true;
     private boolean undergroundProtectionEnabled = true;
     private boolean hideEntitiesEnabled = true;
     private int entityCheckIntervalTicks;
@@ -235,11 +241,7 @@ public class TazAntixRAYPlugin extends JavaPlugin implements Listener, CommandEx
 
         if (!isWorldWhitelisted(to.getWorld().getName())) {
             playerHiddenState.put(player.getUniqueId(), false);
-            getFoliaLib().getScheduler().runAtLocationLater(to, () -> {
-                if(player.isOnline()) {
-                    triggerSmartRefresh(player, true);
-                }
-            }, 2L);
+            schedulePostTeleportRefresh(player, to, false, event.getCause());
             return;
         }
 
@@ -248,12 +250,8 @@ public class TazAntixRAYPlugin extends JavaPlugin implements Listener, CommandEx
 
         playerHiddenState.put(player.getUniqueId(), shouldBeHidden);
         debugLog("Player " + player.getName() + " teleported. Final state decided: HIDDEN=" + shouldBeHidden);
-
-        getFoliaLib().getScheduler().runAtLocationLater(to, () -> {
-            if (player.isOnline()) {
-                triggerSmartRefresh(player, true);
-            }
-        }, 3L);
+        maybeHandleBurstMovement(player, event.getFrom(), to, true, event.getCause());
+        schedulePostTeleportRefresh(player, to, shouldBeHidden, event.getCause());
     }
 
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
@@ -282,6 +280,7 @@ public class TazAntixRAYPlugin extends JavaPlugin implements Listener, CommandEx
         playerHiddenState.clear();
         teleportGracePeriod.clear();
         limitedAreaSmartRefreshTimestamps.clear();
+        limitedAreaEmergencyCooldowns.clear();
         getFoliaLib().getScheduler().cancelAllTasks();
     }
 
@@ -476,6 +475,8 @@ public class TazAntixRAYPlugin extends JavaPlugin implements Listener, CommandEx
             return;
         }
 
+        maybeHandleBurstMovement(player, event.getFrom(), event.getTo(), false, null);
+
         int oldChunkX = event.getFrom().getChunk().getX();
         int oldChunkZ = event.getFrom().getChunk().getZ();
         int newChunkX = event.getTo().getChunk().getX();
@@ -498,6 +499,7 @@ public class TazAntixRAYPlugin extends JavaPlugin implements Listener, CommandEx
         refreshCooldowns.remove(uuid);
         teleportGracePeriod.remove(uuid);
         limitedAreaSmartRefreshTimestamps.remove(uuid);
+        limitedAreaEmergencyCooldowns.remove(uuid);
         cancelGradualRefresh(event.getPlayer());
     }
 
@@ -665,6 +667,14 @@ public class TazAntixRAYPlugin extends JavaPlugin implements Listener, CommandEx
         int smartRefreshCooldownTicks = config.getInt("performance.limited-area.smart-refresh.cooldown-ticks", 5);
         if (smartRefreshCooldownTicks < 1) smartRefreshCooldownTicks = 1;
         limitedAreaSmartRefreshCooldownMillis = smartRefreshCooldownTicks * 50;
+        double emergencyDistance = config.getDouble("performance.limited-area.smart-refresh.emergency-distance", 8.0D);
+        if (emergencyDistance < 0D) emergencyDistance = 0D;
+        limitedAreaEmergencyDistanceSquared = emergencyDistance * emergencyDistance;
+        int emergencyCooldownTicks = config.getInt("performance.limited-area.smart-refresh.emergency-cooldown-ticks", 4);
+        if (emergencyCooldownTicks < 0) emergencyCooldownTicks = 0;
+        limitedAreaEmergencyCooldownMillis = emergencyCooldownTicks * 50;
+        limitedAreaSightlineLookaheadChunks = Math.max(0, config.getInt("performance.limited-area.smart-refresh.lookahead-chunks", 2));
+        limitedAreaEnderpearlRevealEnabled = config.getBoolean("performance.limited-area.smart-refresh.reveal-on-enderpearl", true);
         undergroundProtectionEnabled = config.getBoolean("antixray.underground-protection.enabled", true);
         hideEntitiesEnabled = config.getBoolean("performance.entities.hide-entities", true);
         entityCheckIntervalTicks = config.getInt("performance.entities.check-interval-ticks", 10);
@@ -831,6 +841,172 @@ public class TazAntixRAYPlugin extends JavaPlugin implements Listener, CommandEx
             if (!chunksToRefresh.isEmpty()) {
                 debugLog("Limited-area: refreshing " + chunksToRefresh.size() + " chunks outside the bubble for " + player.getName());
                 refreshViewGradually(player, chunksToRefresh);
+            }
+        });
+    }
+
+    private void refreshChunksInstantly(Player player, int chunkRadius) {
+        if (!player.isOnline()) return;
+        int radius = Math.max(1, chunkRadius);
+        getFoliaLib().getImpl().runAtEntity(player, task -> {
+            World world = player.getWorld();
+            Location location = player.getLocation();
+            int centerChunkX = location.getChunk().getX();
+            int centerChunkZ = location.getChunk().getZ();
+
+            for (int x = centerChunkX - radius; x <= centerChunkX + radius; x++) {
+                for (int z = centerChunkZ - radius; z <= centerChunkZ + radius; z++) {
+                    if (world.isChunkLoaded(x, z)) {
+                        world.refreshChunk(x, z);
+                    }
+                }
+            }
+        });
+    }
+
+    private void requestImmediateFullObfuscation(Player player) {
+        if (!player.isOnline()) return;
+        refreshChunksInstantly(player, Math.max(1, player.getClientViewDistance()));
+        if (joinPacingEnabled) {
+            startPacedFullRefresh(player);
+        } else {
+            refreshViewGradually(player, null);
+        }
+    }
+
+    private void schedulePostTeleportRefresh(Player player, Location destination, boolean isNowHidden, PlayerTeleportEvent.TeleportCause cause) {
+        if (destination == null) {
+            return;
+        }
+
+        getFoliaLib().getScheduler().runAtLocationLater(destination, () -> {
+            if (!player.isOnline()) {
+                return;
+            }
+
+            if (destination.getWorld() == null || !isWorldWhitelisted(destination.getWorld().getName())) {
+                refreshViewGradually(player, null);
+                return;
+            }
+
+            if (isNowHidden) {
+                requestImmediateFullObfuscation(player);
+                return;
+            }
+
+            if (isLimitedAreaEnabled()) {
+                boolean includeSightline = limitedAreaEnderpearlRevealEnabled
+                        && cause == PlayerTeleportEvent.TeleportCause.ENDER_PEARL;
+                requestLimitedAreaEmergencyReveal(player, includeSightline, "teleport");
+                refreshChunksOutsideLimitedArea(player);
+            } else {
+                refreshViewGradually(player, null);
+            }
+        }, 1L);
+    }
+
+    private void maybeHandleBurstMovement(Player player, Location from, Location to, boolean teleport, PlayerTeleportEvent.TeleportCause cause) {
+        if (!isLimitedAreaEnabled()) {
+            return;
+        }
+        if (playerHiddenState.getOrDefault(player.getUniqueId(), false)) {
+            return;
+        }
+        if (from == null || to == null) {
+            return;
+        }
+        if (!teleport && limitedAreaEmergencyDistanceSquared <= 0D) {
+            return;
+        }
+
+        double dx = to.getX() - from.getX();
+        double dy = to.getY() - from.getY();
+        double dz = to.getZ() - from.getZ();
+        double distanceSquared = dx * dx + dy * dy + dz * dz;
+
+        if (!teleport && distanceSquared < limitedAreaEmergencyDistanceSquared) {
+            return;
+        }
+
+        boolean includeSightline = teleport
+                && limitedAreaEnderpearlRevealEnabled
+                && cause == PlayerTeleportEvent.TeleportCause.ENDER_PEARL;
+        requestLimitedAreaEmergencyReveal(player, includeSightline, teleport ? "teleport" : "movement");
+    }
+
+    private void requestLimitedAreaEmergencyReveal(Player player, boolean includeSightline, String reason) {
+        if (!isLimitedAreaEnabled()) {
+            return;
+        }
+        if (playerHiddenState.getOrDefault(player.getUniqueId(), false)) {
+            return;
+        }
+
+        long now = System.currentTimeMillis();
+        long nextAllowed = limitedAreaEmergencyCooldowns.getOrDefault(player.getUniqueId(), 0L);
+        if (now < nextAllowed) {
+            if (includeSightline) {
+                revealChunksAlongSightline(player);
+            }
+            return;
+        }
+
+        limitedAreaEmergencyCooldowns.put(player.getUniqueId(), now + Math.max(0, limitedAreaEmergencyCooldownMillis));
+        debugLog("Limited-area emergency reveal triggered for " + player.getName() + " due to " + reason + ".");
+
+        getFoliaLib().getImpl().runAtEntity(player, task -> {
+            if (!player.isOnline()) {
+                return;
+            }
+            refreshLimitedAreaChunks(player);
+            if (includeSightline) {
+                revealChunksAlongSightline(player);
+            }
+        });
+    }
+
+    private void revealChunksAlongSightline(Player player) {
+        if (limitedAreaSightlineLookaheadChunks <= 0) {
+            return;
+        }
+
+        getFoliaLib().getImpl().runAtEntity(player, task -> {
+            if (!player.isOnline()) {
+                return;
+            }
+
+            Location eye = player.getEyeLocation();
+            Vector direction = eye.getDirection();
+            if (direction == null || direction.lengthSquared() < 1.0E-4) {
+                return;
+            }
+            direction.normalize();
+
+            World world = player.getWorld();
+            int bubbleRadius = getLimitedAreaChunkRadius();
+            double maxDistance = Math.max(4D, (bubbleRadius + limitedAreaSightlineLookaheadChunks) * 16D);
+            Set<Long> chunkKeys = new HashSet<>();
+
+            for (double distance = 2D; distance <= maxDistance; distance += 4D) {
+                double offsetX = direction.getX() * distance;
+                double offsetZ = direction.getZ() * distance;
+                int blockX = eye.getBlockX() + (int) Math.round(offsetX);
+                int blockZ = eye.getBlockZ() + (int) Math.round(offsetZ);
+                int chunkX = blockX >> 4;
+                int chunkZ = blockZ >> 4;
+
+                if (!AntiXrayUtils.isChunkInLimitedArea(player, chunkX, chunkZ, bubbleRadius)) {
+                    continue;
+                }
+
+                long key = Chunk.getChunkKey(chunkX, chunkZ);
+                if (!chunkKeys.add(key)) {
+                    continue;
+                }
+
+                if (world.isChunkLoaded(chunkX, chunkZ)) {
+                    world.refreshChunk(chunkX, chunkZ);
+                }
             }
         });
     }
