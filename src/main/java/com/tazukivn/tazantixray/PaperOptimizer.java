@@ -89,24 +89,10 @@ public class PaperOptimizer {
             if (section == null) continue;
 
             int sectionMinY = worldMinY + sectionIndex * 16;
-            int sectionMaxY = sectionMinY + 15;
-
-            // Nếu cả section nằm hoàn toàn trên hideBelowY thì bỏ qua luôn.
-            if (sectionMinY > hideBelowY || sectionMinY >= worldMaxY) {
-                continue;
-            }
-            // Nếu cả section nằm dưới worldMinY thì cũng bỏ qua.
-            if (sectionMaxY < worldMinY) {
-                continue;
-            }
 
             for (int y = 0; y < 16; y++) {
                 int currentY = sectionMinY + y;
 
-                if (currentY > hideBelowY) {
-                    // Không đụng tới các block phía trên ngưỡng.
-                    continue;
-                }
                 if (currentY < worldMinY || currentY >= worldMaxY) {
                     // Ngoài range thế giới – PacketEvents đôi khi vẫn có section placeholder.
                     continue;
@@ -116,6 +102,11 @@ public class PaperOptimizer {
                     for (int z = 0; z < 16; z++) {
                         WrappedBlockState state = section.get(x, y, z);
                         if (state == null) {
+                            continue;
+                        }
+
+                        boolean inTargetRange = currentY <= hideBelowY || AntiXrayUtils.isSensitiveBlockState(state);
+                        if (!inTargetRange) {
                             continue;
                         }
 
