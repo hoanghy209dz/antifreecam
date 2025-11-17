@@ -29,6 +29,9 @@ public class ChunkPacketListenerPE implements PacketListener {
     private static final PacketType.Play.Server SECTION_BLOCKS_UPDATE_PACKET_TYPE;
     private static final Constructor<?> BLOCK_ENTITY_DATA_CONSTRUCTOR;
     private static final Method BLOCK_ENTITY_DATA_GET_POSITION_METHOD;
+    private static final Constructor<?> BLOCK_ACTION_CONSTRUCTOR;
+    private static final Method BLOCK_ACTION_GET_POSITION_METHOD;
+    private static final PacketType.Play.Server BLOCK_ACTION_PACKET_TYPE;
 
     static {
         Constructor<?> constructor = null;
@@ -56,12 +59,24 @@ public class ChunkPacketListenerPE implements PacketListener {
         } catch (ClassNotFoundException | NoSuchMethodException ignored) {
             // PacketEvents build without WrapperPlayServerBlockEntityData support.
         }
+        Constructor<?> blockActionConstructor = null;
+        Method blockActionGetPosition = null;
+        try {
+            Class<?> blockActionWrapper = Class.forName("com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerBlockAction");
+            blockActionConstructor = blockActionWrapper.getConstructor(PacketSendEvent.class);
+            blockActionGetPosition = blockActionWrapper.getMethod("getBlockPosition");
+        } catch (ClassNotFoundException | NoSuchMethodException ignored) {
+            // PacketEvents build without WrapperPlayServerBlockAction support.
+        }
         SECTION_BLOCKS_UPDATE_CONSTRUCTOR = constructor;
         SECTION_BLOCKS_UPDATE_GET_CHANGES_METHOD = getChanges;
         SECTION_BLOCKS_UPDATE_SET_CHANGES_METHOD = setChanges;
         SECTION_BLOCKS_UPDATE_PACKET_TYPE = resolvePacketType("SECTION_BLOCKS_UPDATE");
         BLOCK_ENTITY_DATA_CONSTRUCTOR = blockEntityConstructor;
         BLOCK_ENTITY_DATA_GET_POSITION_METHOD = blockEntityGetPosition;
+        BLOCK_ACTION_CONSTRUCTOR = blockActionConstructor;
+        BLOCK_ACTION_GET_POSITION_METHOD = blockActionGetPosition;
+        BLOCK_ACTION_PACKET_TYPE = resolvePacketType("BLOCK_ACTION");
     }
 
     private static PacketType.Play.Server resolvePacketType(String fieldName) {
@@ -100,6 +115,8 @@ public class ChunkPacketListenerPE implements PacketListener {
             default -> {
                 if (SECTION_BLOCKS_UPDATE_PACKET_TYPE != null && packetType == SECTION_BLOCKS_UPDATE_PACKET_TYPE) {
                     handleSectionBlockUpdate(event, player, isPlayerInHidingState);
+                } else if (BLOCK_ACTION_PACKET_TYPE != null && packetType == BLOCK_ACTION_PACKET_TYPE) {
+                    handleBlockAction(event, player, isPlayerInHidingState);
                 }
             }
         }
@@ -379,6 +396,23 @@ public class ChunkPacketListenerPE implements PacketListener {
         }
     }
 
+    private void handleBlockAction(PacketSendEvent event, Player player, boolean isPlayerInHidingState) {
+        Object wrapper = instantiateBlockActionWrapper(event);
+        if (wrapper == null) {
+            return;
+        }
+
+        Object position = invokeBlockActionGetPosition(wrapper);
+        int[] coordinates = extractBlockCoordinates(position);
+        if (coordinates == null) {
+            return;
+        }
+
+        if (shouldObfuscateBlock(player, isPlayerInHidingState, coordinates[0], coordinates[1], coordinates[2])) {
+            event.setCancelled(true);
+        }
+    }
+
     private boolean shouldObfuscateBlock(Player player, boolean isPlayerInHidingState, int blockX, int blockY, int blockZ) {
         int hideBelowY = plugin.getConfig().getInt("antixray.hide-below-y", 16);
         if (blockY > hideBelowY) {
@@ -515,6 +549,32 @@ public class ChunkPacketListenerPE implements PacketListener {
             SECTION_BLOCKS_UPDATE_SET_CHANGES_METHOD.invoke(wrapper, entries);
         } catch (IllegalAccessException | InvocationTargetException ex) {
             plugin.debugLog("Failed to write section block changes: " + ex.getMessage());
+        }
+    }
+
+    private Object instantiateBlockActionWrapper(PacketSendEvent event) {
+        if (BLOCK_ACTION_CONSTRUCTOR == null) {
+            return null;
+        }
+
+        try {
+            return BLOCK_ACTION_CONSTRUCTOR.newInstance(event);
+        } catch (InstantiationException | IllegalAccessException | InvocationTargetException ex) {
+            plugin.debugLog("Unable to create WrapperPlayServerBlockAction: " + ex.getMessage());
+            return null;
+        }
+    }
+
+    private Object invokeBlockActionGetPosition(Object wrapper) {
+        if (wrapper == null || BLOCK_ACTION_GET_POSITION_METHOD == null) {
+            return null;
+        }
+
+        try {
+            return BLOCK_ACTION_GET_POSITION_METHOD.invoke(wrapper);
+        } catch (IllegalAccessException | InvocationTargetException ex) {
+            plugin.debugLog("Failed to read block action position: " + ex.getMessage());
+            return null;
         }
     }
 

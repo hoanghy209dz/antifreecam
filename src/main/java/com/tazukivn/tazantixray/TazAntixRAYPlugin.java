@@ -897,7 +897,8 @@ public class TazAntixRAYPlugin extends JavaPlugin implements Listener, CommandEx
             if (isLimitedAreaEnabled()) {
                 boolean includeSightline = limitedAreaEnderpearlRevealEnabled
                         && cause == PlayerTeleportEvent.TeleportCause.ENDER_PEARL;
-                requestLimitedAreaEmergencyReveal(player, includeSightline, "teleport");
+                boolean bypassCooldown = cause == PlayerTeleportEvent.TeleportCause.ENDER_PEARL;
+                requestLimitedAreaEmergencyReveal(player, includeSightline, "teleport", bypassCooldown);
                 refreshChunksOutsideLimitedArea(player);
             } else {
                 refreshViewGradually(player, null);
@@ -931,10 +932,11 @@ public class TazAntixRAYPlugin extends JavaPlugin implements Listener, CommandEx
         boolean includeSightline = teleport
                 && limitedAreaEnderpearlRevealEnabled
                 && cause == PlayerTeleportEvent.TeleportCause.ENDER_PEARL;
-        requestLimitedAreaEmergencyReveal(player, includeSightline, teleport ? "teleport" : "movement");
+        boolean bypassCooldown = teleport && cause == PlayerTeleportEvent.TeleportCause.ENDER_PEARL;
+        requestLimitedAreaEmergencyReveal(player, includeSightline, teleport ? "teleport" : "movement", bypassCooldown);
     }
 
-    private void requestLimitedAreaEmergencyReveal(Player player, boolean includeSightline, String reason) {
+    private void requestLimitedAreaEmergencyReveal(Player player, boolean includeSightline, String reason, boolean bypassCooldown) {
         if (!isLimitedAreaEnabled()) {
             return;
         }
@@ -944,7 +946,7 @@ public class TazAntixRAYPlugin extends JavaPlugin implements Listener, CommandEx
 
         long now = System.currentTimeMillis();
         long nextAllowed = limitedAreaEmergencyCooldowns.getOrDefault(player.getUniqueId(), 0L);
-        if (now < nextAllowed) {
+        if (!bypassCooldown && now < nextAllowed) {
             if (includeSightline) {
                 revealChunksAlongSightline(player);
             }
