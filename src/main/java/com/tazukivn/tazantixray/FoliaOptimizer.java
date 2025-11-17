@@ -105,20 +105,7 @@ public class FoliaOptimizer {
                             continue;
                         }
 
-                        boolean sensitive = AntiXrayUtils.isSensitiveBlockState(state);
-                        boolean allowSensitive = plugin.getConfig().getBoolean(
-                                "antixray.sensitive-blocks.enabled",
-                                false
-                        );
-                        // Optional path to also hide "sensitive" blocks when the player is in a
-                        // hiding/limited-area state; never expands beyond configured conditions.
-
-                        boolean baseRange = currentY <= hideBelowY;
-                        boolean sensitiveRange = allowSensitive && sensitive
-                                && (currentY <= hideBelowY
-                                || isPlayerAboveGround
-                                || plugin.isLimitedAreaEnabled());
-                        boolean inTargetRange = baseRange || sensitiveRange;
+                        boolean inTargetRange = currentY <= hideBelowY;
                         if (!inTargetRange) {
                             continue;
                         }
