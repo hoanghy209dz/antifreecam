@@ -101,6 +101,52 @@ public class AntiXrayUtils {
         return airState;
     }
 
+    public static boolean isSensitiveBlockState(WrappedBlockState state) {
+        return isSensitiveBlockState((Object) state);
+    }
+
+    /**
+     * Reflection-friendly overload: tolerate Packetevents forks khác package bằng
+     * cách đọc identifier qua getNamespacedIdentifier nếu có.
+     */
+    public static boolean isSensitiveBlockState(Object state) {
+        if (state == null) return false;
+
+        try {
+            if (state instanceof WrappedBlockState) {
+                String id = ((WrappedBlockState) state).getNamespacedIdentifier();
+                return isSensitiveIdentifier(id);
+            }
+
+            // Fallback: gọi phản chiếu để tránh lệ thuộc class cụ thể
+            String id = null;
+            try {
+                id = (String) state.getClass().getMethod("getNamespacedIdentifier").invoke(state);
+            } catch (NoSuchMethodException ignored) {
+                // Một vài build gọi là getIdentifier
+                id = (String) state.getClass().getMethod("getIdentifier").invoke(state);
+            }
+
+            return isSensitiveIdentifier(id);
+        } catch (Exception ignored) {
+            return false;
+        }
+    }
+
+    private static boolean isSensitiveIdentifier(String id) {
+        if (id == null) return false;
+
+        String lower = id.toLowerCase();
+        return lower.contains("water")
+                || lower.contains("lava")
+                || lower.contains("spawner")
+                || lower.contains("redstone")
+                || lower.contains("repeater")
+                || lower.contains("comparator")
+                || lower.contains("torch")
+                || lower.contains("observer");
+    }
+
     /**
      * Check if an entity type should be hidden (simplified - hide all common entities)
      */
